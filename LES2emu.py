@@ -27,18 +27,22 @@
 #
 
 
-def GetEmuVars(fname,tstart,tend):
+def GetEmuVars(fname,tstart,tend,ttol=3600.,start_offset=0,end_offset=0):
 	# Function calculates LES output variables for the emulator as defined in the ECLAIR proof-of-concept document
 	#	https://docs.google.com/document/d/1L-YyJLhtmLYg4rJYo5biOW96eeRC7z_trZsow_8TbeE/edit
 	# Inputs:
 	# 	fname			Complete path and name of a time statistics file (*.ts.nc)
 	#	start, tend	Time window (s)
+	# Optional inputs
+	#	ttol			Time tolelance (s) for finding averaging window
+	#	start_offset	Point offset to start index (time in the NetCDF files is the save time, so typically should ignore the first points)
+	#	end_offset	-||- end ind index
 	#
 	# Example:
 	#	file='/ibrix/arch/ClimRes/aholaj/case_emulator_DESIGN_v1.4.0_LES_cray.dev20170324_LVL4/emul01/emul01.ts.nc'
 	#	tstart=2.5*3600
 	#	tend=3.5*3600
-	#	cfrac, CDNC, prcp, dn, we, cfrac_std, CDNC_std, prcp_std, dn_std, we_std = GetEmuVars(file,tstart,tend)
+	#	cfrac, CDNC, prcp, dn, we, cfrac_std, CDNC_std, prcp_std, dn_std, we_std = GetEmuVars(file,tstart,ttol=10.,start_offset=1)
 	#
 	import os
 	import netCDF4 as netcdf
@@ -78,6 +82,18 @@ def GetEmuVars(fname,tstart,tend):
 		if abs(t-tend)<abs(times[ind_tend]-tend): ind_tend=i
 		i+=1
 	#
+	if abs(times[ind_tstart]-tstart)>ttol or abs(times[ind_tend]-tend)>ttol:
+		print 'Matching start or end time not found from '+fname+'!'
+		return cfrac, CDNC, prcp, dn, we, cfrac_std, CDNC_std, prcp_std, dn_std, we_std,
+	#
+	# Apply offset (typically the first point is ignored
+	ind_tstart+=start_offset
+	ind_tend+=end_offset
+	if ind_tstart<0 or ind_tstart>ind_tend or ind_tend>=len(times):
+		print 'Invalid data range for '+fname+': ',ind_tstart,ind_tend,len(times)
+		return cfrac, CDNC, prcp, dn, we, cfrac_std, CDNC_std, prcp_std, dn_std, we_std,
+	#
+	#
 	# Outputs
 	# ========
 	# Cloud fraction
@@ -90,64 +106,94 @@ def GetEmuVars(fname,tstart,tend):
 	#
 	if 'Nc_ic' in ncid.variables:	# Level 4 = SALSA microphysics
 		# Cloud droplet number concentration (#/kg)
-		CDNC = numpy.mean( ncid.variables['Nc_ic'][ind_tstart:ind_tend] )
-		CDNC_std = numpy.std( ncid.variables['Nc_ic'][ind_tstart:ind_tend] )
+		if ind_tstart < ind_tend:
+			CDNC = numpy.mean( ncid.variables['Nc_ic'][ind_tstart:ind_tend] )
+			CDNC_std = numpy.std( ncid.variables['Nc_ic'][ind_tstart:ind_tend] )
+		else:
+			CDNC = ncid.variables['Nc_ic'][ind_tstart]
+			CDNC_std = -999.
 		#
 		# Surface precipitation (kg/m^2/s)
-		prcp = numpy.mean( ncid.variables['rmH2Opr'][ind_tstart:ind_tend] )
-		prcp_std = numpy.std( ncid.variables['rmH2Opr'][ind_tstart:ind_tend] )
+		if ind_tstart < ind_tend:
+			prcp = numpy.mean( ncid.variables['rmH2Opr'][ind_tstart:ind_tend] )
+			prcp_std = numpy.std( ncid.variables['rmH2Opr'][ind_tstart:ind_tend] )
+		else:
+			prcp = ncid.variables['rmH2Opr'][ind_tstart]
+			prcp_std = -999.
 		#
 		# Change in in-cloud aerosol+cloud droplet number concentration
-		nc = ncid.variables['Nc_ic'][ind_tstart:ind_tend]	# Cloud droplets
-		nc += ncid.variables['Na_int'][ind_tstart:ind_tend]	# + interstitial aerosol
-		tt = ncid.variables['time'][ind_tstart:ind_tend]	# Time (s) vector
-		a,dn,a_std,dn_std=ls_fit(tt,nc)	# Least squares fit (nc=a+b*tt)
-		# Normalize
-		nc_avg = numpy.mean( nc )
-		dn/=nc_avg
-		dn_std/=nc_avg
+		if ind_tstart < ind_tend:
+			nc = ncid.variables['Nc_ic'][ind_tstart:ind_tend]	# Cloud droplets
+			nc += ncid.variables['Na_int'][ind_tstart:ind_tend]	# + interstitial aerosol
+			tt = ncid.variables['time'][ind_tstart:ind_tend]	# Time (s) vector
+			a,dn,a_std,dn_std=ls_fit(tt,nc)	# Least squares fit (nc=a+b*tt)
+			# Normalize
+			nc_avg = numpy.mean( nc )
+			if nc_avg>0.:
+				dn/=nc_avg
+				dn_std/=nc_avg
+		else:
+			dn=-999.
+			dn_std=-999.
 	else:		# Level 3 = saturation adjustment method (given CDNC)
 		# Cloud droplet number concentration (#/kg): fixed
-		CDNC = numpy.mean( ncid.variables['CCN'][ind_tstart:ind_tend] )
-		CDNC_std = numpy.std( ncid.variables['CCN'][ind_tstart:ind_tend] )
+		if ind_tstart < ind_tend:
+			CDNC = numpy.mean( ncid.variables['CCN'][ind_tstart:ind_tend] )
+			CDNC_std = numpy.std( ncid.variables['CCN'][ind_tstart:ind_tend] )
+		else:
+			CDNC = ncid.variables['CCN'][ind_tstart]
+			CDNC_std = -999.
 		#
 		# Surface precipitation (kg/m^2/s): variable prcp is in W/m^2=J/s/m^2, which can be
 		# converted to kg using latent heat of vaporization (2.5e+06 J/kg)
-		prcp = numpy.mean( ncid.variables['prcp'][ind_tstart:ind_tend] )/2.5e6
-		prcp_std = numpy.std( ncid.variables['prcp'][ind_tstart:ind_tend] )/2.5e6
+		if ind_tstart < ind_tend:
+			prcp = numpy.mean( ncid.variables['prcp'][ind_tstart:ind_tend] )/2.5e6
+			prcp_std = numpy.std( ncid.variables['prcp'][ind_tstart:ind_tend] )/2.5e6
+		else:
+			prcp = ncid.variables['prcp'][ind_tstart]/2.5e6
+			prcp_std = -999.
 		#
 		# Change in in-cloud aerosol+cloud droplet number concentration: N/A
 	#
 	# Entrainment velocity (m/s)
 	#	we=dz/dt+D*z, where z is PBL height and D is large scale divergence (1.5e-6 1/s) (see e.g. Kazil et al., ACP, 2016).
-	zz = ncid.variables['zi1_bar'][ind_tstart:ind_tend]	# PBL height (m) vector
-	tt = ncid.variables['time'][ind_tstart:ind_tend]	# Time (s) vector
-	a,dzdt,a_std,dzdt_std=ls_fit(tt,zz)	# Least squares fit (zz=a+b*tt)
-	z=numpy.mean(zz)	# Mean PBL height
-	we=dzdt+1.5e-6*z
-	we_std=dzdt_std
+	if ind_tstart < ind_tend:
+		# Must have at least two points for the slope, but should haev more than that
+		zz = ncid.variables['zi1_bar'][ind_tstart:ind_tend]	# PBL height (m) vector
+		tt = ncid.variables['time'][ind_tstart:ind_tend]	# Time (s) vector
+		a,dzdt,a_std,dzdt_std=ls_fit(tt,zz)	# Least squares fit (zz=a+b*tt)
+		z=numpy.mean(zz)	# Mean PBL height
+		we=dzdt+1.5e-6*z
+		we_std=dzdt_std
+	else:
+		we = -999.
+		we_std = -999.
 	#
 	# Close file
 	ncid.close()
-	#	
+	#
 	# All done
 	return cfrac, CDNC, prcp, dn, we, cfrac_std, CDNC_std, prcp_std, dn_std, we_std,
 
 
 
-def get_netcdf_variable(fname,var_name,start_time,end_time=-10000.):
+def get_netcdf_variable(fname,var_name,start_time,end_time=-10000.,ttol=3600.,start_offset=0,end_offset=0):
 	# Function for extracting data from a NetCDF file based on the given time value (or range).
 	#
 	# Inputs:
 	#	fname			Complete file path and name
 	#	var_name		NetCDF variable name
 	#	start_time	Target or start (when end_time is specified) time value
+	# Optional inputs
 	#	end_time		Optional end time value
+	#	ttol			Time tolelance (s) for finding averaging window
+	#	start_offset	Point offset to start index (time in the NetCDF files is the save time, so typically should ignore the first points)
+	#	end_offset	-||- end index
 	#
 	# Example:
 	#	file='/ibrix/arch/ClimRes/aholaj/case_emulator_DESIGN_v1.4.0_LES_cray.dev20170324_LVL4/emul01/emul01.ts.nc'
-	#	lmax=get_netcdf_variable(file,'lmax',3*3600)
-	#	lmax=get_netcdf_variable(file,'lmax',2.5*3600,3.5*3600)
+	#	lmax=get_netcdf_variable(file,'lmax',3*3600,ttol=10)
+	#	lmax=get_netcdf_variable(file,'lmax',2.5*3600,3.5*3600,ttol=10.,start_offset=1)
 	import os	
 	import numpy
 	import netCDF4 as netcdf
@@ -157,6 +203,13 @@ def get_netcdf_variable(fname,var_name,start_time,end_time=-10000.):
 	#
 	# Open the target NetCDF file
 	ncid = netcdf.Dataset(fname,'r')
+	#
+	if 'time' not in ncid.variables:
+		raise RuntimeError('Time not found from '+fname+'!')
+	elif var_name not in ncid.variables:
+		raise RuntimeError('Variable '+var_name+' not found from '+fname+'!')
+	elif 'time' not in ncid.variables[var_name].dimensions:
+		raise RuntimeError('Time is not a dimension for '+var_name+' (file '+fname+')!')
 	#
 	# Time
 	times = ncid.variables['time']
@@ -173,12 +226,19 @@ def get_netcdf_variable(fname,var_name,start_time,end_time=-10000.):
 			if abs(tt-end_time)<abs(times[ind_end]-end_time): ind_end=i
 			i+=1
 		#
-		# Time must be included as a dimension
-		dims=ncid.variables[var_name].dimensions
-		if 'time' not in dims: raise RuntimeError('Time is not a dimension for '+var_name+' (file '+fname+')!')
+		if abs(times[ind_start]-start_time)>ttol or abs(times[ind_end]-end_time)>ttol:
+			print 'Matching start or end time not found from '+fname+'!'
+			return -999.
+		#
+		# Apply offset (typically the first point is ignored
+		ind_start+=start_offset
+		ind_end+=end_offset
+		if ind_start<0 or ind_start>ind_end or ind_end>=len(times):
+			print 'Invalid data range for '+fname+'!'
+			return -999.
 		#
 		# Average over time dimension
-		ind=dims.index('time')
+		ind=ncid.variables[var_name].dimensions.index('time')
 		#
 		out=numpy.mean( ncid.variables[var_name][ind_start:ind_end,],axis=ind )
 		# Could add standard deviations?
@@ -191,6 +251,16 @@ def get_netcdf_variable(fname,var_name,start_time,end_time=-10000.):
 			if abs(tt-start_time)<abs(times[ind]-start_time): ind=i
 			i=i+1
 		#
+		if abs(times[ind]-tstart)>ttol:
+			print 'Matching time not found from '+fname+'!'
+			return -999.
+		#
+		# Apply offset (typically the first point is ignored
+		ind+=start_offset
+		if ind<0 or ind>=len(times):
+			print 'Invalid index for '+fname+'!'
+			return -999.
+		#
 		out=ncid.variables[var_name][ind,]
 	#
 	# Close file
@@ -199,7 +269,7 @@ def get_netcdf_variable(fname,var_name,start_time,end_time=-10000.):
 
 
 
-def extract_write_data(fname_template,specs,name_out='',nmax=200):
+def extract_write_data(fname_template,specs,name_out='',nmax=200,skip_errs=False):
 	# Extract and process data from one or more NetCDF files, and write it to a text file (optional)
 	#
 	# Inputs:
@@ -208,6 +278,7 @@ def extract_write_data(fname_template,specs,name_out='',nmax=200):
 	#	specs				List of variables including slizing and numpy operations
 	#	name_out			Output file name (optional)
 	# 	nmax				Maximum number of files (optional)
+	#	skip_errs			Don't stop on errors - needed when complete data set is not available (saves just NaN)
 	#
 	# Examples:
 	#	fname_template='/ibrix/arch/ClimRes/aholaj/case_emulator_DESIGN_v1.4.0_LES_cray.dev20170324_LVL4/emul%02u/emul%02u.ts.nc'
@@ -227,6 +298,7 @@ def extract_write_data(fname_template,specs,name_out='',nmax=200):
 	import os
 	import netCDF4 as netcdf
 	import numpy
+	import sys
 	#
 	# Function for converting command line commands to NetCDF format
 	def interpret_fun(cmd):
@@ -236,7 +308,8 @@ def extract_write_data(fname_template,specs,name_out='',nmax=200):
 		lst=-1
 		i=0
 		for tt in cmd:
-			if (tt=='[' or tt==')') and lst==-1:
+			if (tt=='[' or tt==')' or tt==',') and lst==-1:
+				# e.g. 'numpy.amax(l[89,:])', 'numpy.amax(l)' or 'numpy.amax(P_Rwca,axis=0)'
 				lst=i
 			elif tt=='(':
 				frst=i
@@ -253,6 +326,7 @@ def extract_write_data(fname_template,specs,name_out='',nmax=200):
 	# Output to text file
 	if len(name_out): fid_out=open(name_out,'w')
 	#
+	nerr=0
 	files=0		# Count files
 	values=0	# Count values extracted
 	out=[] 		# Complete output
@@ -284,15 +358,45 @@ def extract_write_data(fname_template,specs,name_out='',nmax=200):
 			if '(' in nam:
 				# There is a call to a function
 				fun=interpret_fun(nam)
-				obj =eval( fun )
+				try:
+					obj =eval( fun )
+				except:
+					if not skip_errs:
+						print "Unexpected error:", sys.exc_info()[0]
+						raise
+					#
+					# Ignore errors
+					obj = float('nan')	# Scalar works quite often
+					nerr+=1
+					msg=sys.exc_info()[0]
 			elif '[' in nam:
 				# Selected data range
 				name=nam[:nam.index('[')]
 				ind=nam[nam.index('['):]
-				obj =eval( 'ncid.variables[\''+name+'\']'+ind )
+				try:
+					obj =eval( 'ncid.variables[\''+name+'\']'+ind )
+				except:
+					if not skip_errs:
+						print "Unexpected error:", sys.exc_info()[0]
+						raise
+					#
+					# Ignore errors
+					obj = float('nan')	# Scalar works quite often
+					nerr+=1
+					msg=sys.exc_info()[0]
 			else:
 				# Data as is
-				obj = ncid.variables[nam][:]
+				try:
+					obj = ncid.variables[nam][:]
+				except:
+					if not skip_errs:
+						print "Unexpected error:", sys.exc_info()[0]
+						raise
+					#
+					# Ignore errors
+					obj = float('nan')	# Scalar works quite often
+					nerr+=1
+					msg=sys.exc_info()[0]
 			#
 			# Append data
 			row.append(obj)
@@ -321,6 +425,7 @@ def extract_write_data(fname_template,specs,name_out='',nmax=200):
 	if len(name_out):
 		fid_out.close()
 		print str(files)+' files examined, '+str(values)+' values saved to '+name_out
+		if nerr>0: print '   '+str(nerr)+' error(s) ignored: ',msg
 	#
 	# Return the data
 	return out
