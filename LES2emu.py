@@ -1,7 +1,7 @@
 # Functions extracting emulator and any other data from LES output NetCDF files,
 # and collection of functions for generating LES inputs.
 #
-#	Tomi Raatikanen 2.6.2017
+#	Tomi Raatikanen 8.1.2018
 #
 # Functions
 # =========
@@ -344,18 +344,50 @@ def extract_write_data(fname_template,specs,name_out='',nmax=200,skip_errs=False
 			# No more than three?
 			file_name=fname_template % (i,i,i,i)
 		#
+		ncid=0
 		if not os.path.isfile(file_name):
 			if i==1 and n>0: print file_name+' not found!'
-			break
+			if not skip_errs or i>90:
+				break
+			else:
+				# Ignore missing file (<90)
+				ncid=-999
+				nerr+=1
+				msg=file_name+' not found!'
+				#
+				#
+				#row=[] # one row
+				#for nam in specs:
+				#	row.append(obj)
+				#
+				#out.append(row)
+				#
+				# Save data
+				#if len(name_out):
+				#	# Save variables as space separated strings
+				#	if not hasattr(obj, '__iter__'):
+				#		# Scalar
+				#		fid_out.write( str(obj)+" " )
+				#		values+=1
+				#	else:
+				#		# Vector
+				#		for val in obj:
+				#			fid_out.write( str(val)+" " )
+				#			values+=1
+				#
+				#continue
 		#
 		# Open input file
-		ncid = netcdf.Dataset(file_name,'r')
+		if ncid==0: ncid = netcdf.Dataset(file_name,'r')
 		#
 		# Outputs
 		row=[] # one row
 		for nam in specs:
 			# Interpret command
-			if '(' in nam:
+			if ncid<0:
+				# File not found
+				obj = float('nan')	# Scalar works quite often
+			elif '(' in nam:
 				# There is a call to a function
 				fun=interpret_fun(nam)
 				try:
@@ -409,17 +441,24 @@ def extract_write_data(fname_template,specs,name_out='',nmax=200,skip_errs=False
 					fid_out.write( str(obj)+" " )
 					values+=1
 				else:
-					# Vector
+					# Vector/matrix
 					for val in obj:
-						fid_out.write( str(val)+" " )
-						values+=1
+						if not hasattr(val, '__iter__'):
+							# Scalar (1D vector)
+							fid_out.write( str(val)+" " )
+							values+=1
+						else:
+							# Vector (2D matrix)
+							for val2 in val:
+								fid_out.write( str(val2)+" " )
+								values+=1
 		#
 		# New line
 		if len(name_out):	fid_out.write( "\r\n" )
 		#
 		out.append(row)
 		#
-		ncid.close()
+		if ncid>0: ncid.close()
 		files+=1
 	#
 	if len(name_out):
