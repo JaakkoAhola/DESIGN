@@ -50,10 +50,10 @@ def GetEmuVars(fname,tstart,tend,ttol=3600.,start_offset=0,end_offset=0):
 	#
 	# Outputs
 	cfrac=-999.	# Cloud fraction
-	CDNC=-999.	# Cloud droplet number concentration (#/kg)
-	prcp=-999.		# Precipitation tendency = surface precipitation (kg/m^2/s)
-	dn=-999.		# In-cloud aerosol number loss tendency = change in in-cloud aerosol+cloud droplet number concentration (#/kg/s)
-	we=-999.		# Mixing between FT and BL = entrainment velocity (m/s)
+	CDNC=-999.	# Cloud droplet number concentration in cloudy columns (#/kg)
+	prcp=-999.		# Precipitation tendency = domain mean surface precipitation (kg/m^2/s)
+	dn=-999.		# In-cloud aerosol number loss tendency = change in interstitial aerosol+cloud droplet number concentration in cloudy columns (#/kg/s)
+	we=-999.		# Mixing between FT and BL = domeain mean entrainment velocity (m/s)
 	#
 	# ... and their standard deviations
 	cfrac_std=-999.; CDNC_std=-999.; prcp_std=-999.; dn_std=-999.; we_std=-999.
@@ -101,17 +101,16 @@ def GetEmuVars(fname,tstart,tend,ttol=3600.,start_offset=0,end_offset=0):
 		print 'Cloud fraction not found from '+fname+'!'
 		return cfrac, CDNC, prcp, dn, we, cfrac_std, CDNC_std, prcp_std, dn_std, we_std,
 	#
-	cfrac = numpy.mean( ncid.variables['cfrac'][ind_tstart:ind_tend] )
-	cfrac_std = numpy.std( ncid.variables['cfrac'][ind_tstart:ind_tend] )
+	# Need cloud fractions for normalizing domain mean interstitial and cloud droplet number concentrations
+	cfrac_ts=ncid.variables['cfrac'][ind_tstart:ind_tend]
+	ncfrac = sum( cfrac_ts>0.0 ) # The number of non-zero cloud fractions
+	#
+	cfrac = numpy.mean( cfrac_ts )
+	cfrac_std = numpy.std( cfrac_ts )
 	#
 	if 'Nc_ic' in ncid.variables:	# Level 4 = SALSA microphysics
-		# Cloud droplet number concentration (#/kg)
-		if ind_tstart < ind_tend:
-			CDNC = numpy.mean( ncid.variables['Nc_ic'][ind_tstart:ind_tend] )
-			CDNC_std = numpy.std( ncid.variables['Nc_ic'][ind_tstart:ind_tend] )
-		else:
-			CDNC = ncid.variables['Nc_ic'][ind_tstart]
-			CDNC_std = -999.
+		# Cloud droplet number concentration averaged over cloudy columns (#/kg)
+		CDNC,CDNC_std=average_scaled(ncid.variables['Nc_ic'][ind_tstart:ind_tend],cfrac_ts)
 		#
 		# Surface precipitation (kg/m^2/s)
 		if ind_tstart < ind_tend:
@@ -122,16 +121,21 @@ def GetEmuVars(fname,tstart,tend,ttol=3600.,start_offset=0,end_offset=0):
 			prcp_std = -999.
 		#
 		# Change in in-cloud aerosol+cloud droplet number concentration
-		if ind_tstart < ind_tend:
-			nc = ncid.variables['Nc_ic'][ind_tstart:ind_tend]	# Cloud droplets
-			nc += ncid.variables['Na_int'][ind_tstart:ind_tend]	# + interstitial aerosol
-			tt = ncid.variables['time'][ind_tstart:ind_tend]	# Time (s) vector
+		if ncfrac>=2: # Linear fit needs at least two data points
+			tt = ncid.variables['time'][ind_tstart:ind_tend] 	# Time (s) vector
+			nc = ncid.variables['Nc_ic'][ind_tstart:ind_tend]	# Cloud droplets (domain mean)
+			nc += ncid.variables['Na_int'][ind_tstart:ind_tend]	# + interstitial aerosol (domain mean)
+			# Normalize by cloud fraction => concentrations for cloudy columns
+			i=0
+			for cf in cfrac_ts:
+				if cf>0:
+					nc[i]/=cf
+				else:
+					# Divide-by-zero => NaN
+					nc[i]=float('nan')
+				i+=1
+			#
 			a,dn,a_std,dn_std=ls_fit(tt,nc)	# Least squares fit (nc=a+b*tt)
-			# Normalize
-			nc_avg = numpy.mean( nc )
-			if nc_avg>0.:
-				dn/=nc_avg
-				dn_std/=nc_avg
 		else:
 			dn=-999.
 			dn_std=-999.
@@ -620,9 +624,18 @@ def solve_rw(p_surf,theta,lwc,zz):
 #
 # ================ Helper functions ================
 #
-def ls_fit(x,y):
+def ls_fit(xx,yy):
 	# Simple linear least squares fit: y=a+b*x
 	import numpy
+	#
+	# Ignore NaN's
+	x=[]; y=[]
+	i=0
+	for val in xx:
+		if not (numpy.isnan(xx[i]) or numpy.isnan(yy[i])):
+			x.append(xx[i])
+			y.append(yy[i])
+		i+=1
 	#
 	if len(x)<=1:
 		# Scalar
@@ -649,6 +662,27 @@ def ls_fit(x,y):
 			b_std=0.0
 	# 
 	return a,b,a_std,b_std,
+
+def average_scaled(x,y):
+	# Calculate average of x/y so that points where y=0 are ignored
+	import numpy
+	sx=0.
+	sx2=0.
+	n=0
+	i=0
+	for yy in y:
+		if yy>0.:
+			sx+=x[i]/yy
+			sx2+=(x[i]/yy)**2
+			n+=1
+		i+=1
+	#
+	if n==0:
+		return -999., -999.
+	elif n==1:
+		return sx, -999.
+	else:
+		return sx/n, numpy.sqrt( sx2/n - (sx/n)**2 )
 
 #
 # Functions from the LES model
