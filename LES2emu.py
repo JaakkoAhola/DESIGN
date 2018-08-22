@@ -180,6 +180,118 @@ def GetEmuVars(fname,tstart,tend,ttol=3600.,start_offset=0,end_offset=0):
 	return cfrac, CDNC, prcp, dn, we, cfrac_std, CDNC_std, prcp_std, dn_std, we_std,
 
 
+def get_netcdf_updraft(fname,start_time,ttol=3600.,tol_clw=1e-5):
+	# Function for calculating mean positive updraft velocities and cloud droplet number concentrations
+	# at cloud base (see Romakkaniemi et al., 2009) from 3D data obtained from a 4D NetCDF file (*.nc).
+	# Note that 3D outputs have low output frequency, so values are calculated for one time step only.
+	#
+	# Romakkaniemi, S., G. McFiggans, K.N. Bower, P. Brown, H. Coe, T.W. Choularton, A comparison between
+	# trajectory ensemble and adiabatic parcel modelled cloud properties and evaluation against airborne
+	# measurements, J. Geophys. Res., doi:10.1029/2008JD011286, 2009
+	#
+	# Inputs:
+	#	fname			Complete file path and name (*.nc)
+	#	start_time	Target or start (when end_time is specified) time value
+	# Optional inputs
+	#	ttol			Time tolelance (s) for finding averaging window
+	#	tol_clw		Cloud liquid water mixing ratio (kg/kg) for the cloud base
+	#
+	# Example:
+	#	file='/ibrix/arch/ClimRes/aholaj/case_emulator_DESIGN_v1.5.1_LES_intel.v1.0.4_LVL4/emul001/emul001.nc'
+	#	w,cdnc,cdnc_w,n=lmax=get_netcdf_updraft(file,10800.,ttol=100.)
+	#	print w,cdnc,cdnc_w,n
+	#
+	import os
+	import netCDF4 as netcdf
+	#
+	# Outputs
+	wpos=-999.		# Mean positive updraft velocity at the cloud base (m/s)
+	cdnc_p=-999.		# Mean cloud droplet number concentration at the cloud base with positive updraft velocity (1/kg)
+	cdnc_wp=-999.	# Velocity weigted mean cloud droplet number concentration at the cloud base with positive updraft velocity (1/kg)
+	n=-999				# Number of cloud bases with positive updraft (-)
+	#
+	# File must exist
+	if not os.path.lexists(fname):
+		print fname+' not found!'
+		return wpos,cdnc_p,cdnc_wp,n
+	#
+	# Open the target NetCDF file
+	ncid = netcdf.Dataset(fname,'r')
+	#
+	if 'time' not in ncid.variables:
+		print 'Time not found from '+fname+'!'
+		return wpos,cdnc_p,cdnc_wp,n
+	elif 'w' not in ncid.variables:
+		print 'Variable w not found from '+fname+'!'
+		return wpos,cdnc_p,cdnc_wp,n
+	elif 'l' not in ncid.variables:
+		print 'Variable l not found from '+fname+'!'
+		return wpos,cdnc_p,cdnc_wp,n
+	elif 'time' not in ncid.variables['w'].dimensions or 'time' not in ncid.variables['l'].dimensions:
+		print 'Time is not a dimension for w or l (file '+fname+')!'
+		return wpos,cdnc_p,cdnc_wp,n
+	#
+	# Time
+	times = ncid.variables['time']
+	#
+	# Find the closest matching time value
+	ind=0
+	i=0
+	for tt in times:
+		# Closest match
+		if abs(tt-start_time)<abs(times[ind]-start_time): ind=i
+		i=i+1
+	#
+	if abs(times[ind]-start_time)>ttol:
+		print 'Matching time not found from '+fname+'!'
+		return wpos,cdnc_p,cdnc_wp,n
+	#
+	# Data
+	w=ncid.variables['w'][ind,]
+	l=ncid.variables['l'][ind,]
+	dims=l.shape # x, y, z
+	#
+	# Optional: CDNC from UCLALES-SALSA simulations
+	if 'S_Nc' in ncid.variables: cdnc=ncid.variables['S_Nc'][ind,]
+	#
+	# Calculations
+	i=0; j=0
+	n=0; wpos=0.0
+	while i<dims[0] and j<dims[1]:
+		k=0
+		while k<dims[2]:
+			if l[i,j,k]>tol_clw:
+				# Found cloud base, but only the positive updraft velocities are counted
+				if w[i,j,k]>=0.:
+					n+=1
+					wpos+=w[i][j][k]
+					if 'S_Nc' in ncid.variables:
+						cdnc_p+=cdnc[i,j,k]
+						cdnc_wp+=w[i][j][k]*cdnc[i,j,k]
+				break
+			k+=1
+		if j+1<dims[1]:
+			j+=1
+		else:
+			i+=1
+			j=0
+	#
+	if n>0:
+		wpos/=n
+		if 'S_Nc' in ncid.variables:
+			cdnc_p/=n
+			cdnc_wp/=(wpos*n)
+	else:
+		wpos=-999.
+	#
+	# Close file
+	ncid.close()
+	#
+	# Outputs: mean positive updraft velocity and cloud droplet number concentrations (mean and weighted with velocity) at the cloud base
+	return wpos,cdnc_p,cdnc_wp,n
+
+
+
 
 def get_netcdf_variable(fname,var_name,start_time,end_time=-10000.,ttol=3600.,start_offset=0,end_offset=0):
 	# Function for extracting data from a NetCDF file based on the given time value (or range).
