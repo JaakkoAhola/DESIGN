@@ -1,16 +1,18 @@
 # Functions extracting emulator and any other data from LES output NetCDF files,
 # and collection of functions for generating LES inputs.
 #
-#	Tomi Raatikanen 28.11.2018
+#	Tomi Raatikanen 18.1.2019
 #
 # Functions
 # =========
 # Use Python import to make these functions available, e.g. from LES2emu import GetEmuVars, get_netcdf_variable
 #
 # a) Functions for extracting data from the LES outputs
-#	GetEmuVars(fname,tstart,tend)
+#	GetEmu2Vars(path)
+#	GetEmu1Vars(fname,tstart,tend,[ttol,start_offset,end_offset])
 #	get_netcdf_variable(fname,var_name,target_time,[end_time])
 #	extract_write_data(fname_template,specs,[name_out,nmax])
+#	get_netcdf_updraft(fname,tstart,tend,[ttol,tol_clw])
 #
 # b) Functions for generating LES inputs
 #	calc_cloud_base(p_surf,theta,rw)
@@ -31,8 +33,8 @@
 #
 
 
-def GetEmuVars(fname,tstart,tend,ttol=3600.,start_offset=0,end_offset=0):
-	# Function calculates LES output variables for the emulator as defined in the ECLAIR proof-of-concept document
+def GetEmu1Vars(fname,tstart,tend,ttol=3600.,start_offset=0,end_offset=0):
+	# Function calculates LES output variables for emulator v1.0 as defined in the ECLAIR proof-of-concept document
 	#	https://docs.google.com/document/d/1L-YyJLhtmLYg4rJYo5biOW96eeRC7z_trZsow_8TbeE/edit
 	# Inputs:
 	# 	fname			Complete path and name of a time statistics file (*.ts.nc)
@@ -46,7 +48,7 @@ def GetEmuVars(fname,tstart,tend,ttol=3600.,start_offset=0,end_offset=0):
 	#	file='/ibrix/arch/ClimRes/aholaj/case_emulator_DESIGN_v1.4.0_LES_cray.dev20170324_LVL4/emul01/emul01.ts.nc'
 	#	tstart=2.5*3600
 	#	tend=3.5*3600
-	#	cfrac, CDNC, prcp, dn, we, cfrac_std, CDNC_std, prcp_std, dn_std, we_std = GetEmuVars(file,tstart,ttol=10.,start_offset=1)
+	#	cfrac, CDNC, prcp, dn, we, cfrac_std, CDNC_std, prcp_std, dn_std, we_std = GetEmu1Vars(file,tstart,ttol=10.,start_offset=1)
 	#
 	import os
 	import netCDF4 as netcdf
@@ -184,10 +186,9 @@ def GetEmuVars(fname,tstart,tend,ttol=3600.,start_offset=0,end_offset=0):
 	return cfrac, CDNC, prcp, dn, we, cfrac_std, CDNC_std, prcp_std, dn_std, we_std,
 
 
-def get_netcdf_updraft(fname,start_time,ttol=3600.,tol_clw=1e-5):
+def get_netcdf_updraft(fname,tstart,tend,ttol=3600.,tol_clw=1e-5):
 	# Function for calculating mean positive updraft velocities and cloud droplet number concentrations
-	# at cloud base (see Romakkaniemi et al., 2009) from 3D data obtained from a 4D NetCDF file (*.nc).
-	# Note that 3D outputs have low output frequency, so values are calculated for one time step only.
+	# at cloud base (see Romakkaniemi et al., 2009) from 4D data (*.nc).
 	#
 	# Romakkaniemi, S., G. McFiggans, K.N. Bower, P. Brown, H. Coe, T.W. Choularton, A comparison between
 	# trajectory ensemble and adiabatic parcel modelled cloud properties and evaluation against airborne
@@ -195,104 +196,124 @@ def get_netcdf_updraft(fname,start_time,ttol=3600.,tol_clw=1e-5):
 	#
 	# Inputs:
 	#	fname			Complete file path and name (*.nc)
-	#	start_time	Target or start (when end_time is specified) time value
+	#	start, tend	Averaging time window (s)
 	# Optional inputs
 	#	ttol			Time tolelance (s) for finding averaging window
 	#	tol_clw		Cloud liquid water mixing ratio (kg/kg) for the cloud base
 	#
 	# Example:
-	#	file='/ibrix/arch/ClimRes/aholaj/case_emulator_DESIGN_v1.5.1_LES_intel.v1.0.4_LVL4/emul001/emul001.nc'
-	#	w,cdnc,cdnc_w,n=lmax=get_netcdf_updraft(file,10800.,ttol=100.)
+	#	file='/arch/eclair/UCLALES-SALSA_training_simulations/case_emulator_DESIGN_v3.0.0_LES_ECLAIR_branch_ECLAIRv2.0.cray.fast_LVL3/emul001/emul001.nc'
+	#	w,cdnc,cdnc_w,n=get_netcdf_updraft(file,9000.,12600.,ttol=10.)
 	#	print w,cdnc,cdnc_w,n
 	#
 	import os
 	import netCDF4 as netcdf
-	#
-	# Outputs
-	wpos=-999.		# Mean positive updraft velocity at the cloud base (m/s)
-	cdnc_p=-999.		# Mean cloud droplet number concentration at the cloud base with positive updraft velocity (1/kg)
-	cdnc_wp=-999.	# Velocity weigted mean cloud droplet number concentration at the cloud base with positive updraft velocity (1/kg)
-	n=-999				# Number of cloud bases with positive updraft (-)
+	import numpy
 	#
 	# File must exist
 	if not os.path.lexists(fname):
-		print fname+' not found!'
-		return wpos,cdnc_p,cdnc_wp,n
+		raise RuntimeError(fname+' not found!')
 	#
 	# Open the target NetCDF file
 	ncid = netcdf.Dataset(fname,'r')
 	#
 	if 'time' not in ncid.variables:
-		print 'Time not found from '+fname+'!'
-		return wpos,cdnc_p,cdnc_wp,n
+		raise RuntimeError('Time not found from '+fname+'!')
 	elif 'w' not in ncid.variables:
-		print 'Variable w not found from '+fname+'!'
-		return wpos,cdnc_p,cdnc_wp,n
+		raise RuntimeError('Variable w not found from '+fname+'!')
 	elif 'l' not in ncid.variables:
-		print 'Variable l not found from '+fname+'!'
-		return wpos,cdnc_p,cdnc_wp,n
+		raise RuntimeError('Variable l not found from '+fname+'!')
 	elif 'time' not in ncid.variables['w'].dimensions or 'time' not in ncid.variables['l'].dimensions:
-		print 'Time is not a dimension for w or l (file '+fname+')!'
-		return wpos,cdnc_p,cdnc_wp,n
+		raise RuntimeError('Time is not a dimension for w or l (file '+fname+')!')
 	#
 	# Time
 	times = ncid.variables['time']
 	#
-	# Find the closest matching time value
-	ind=0
-	i=0
-	for tt in times:
-		# Closest match
-		if abs(tt-start_time)<abs(times[ind]-start_time): ind=i
-		i=i+1
-	#
-	if abs(times[ind]-start_time)>ttol:
-		print 'Matching time not found from '+fname+'!'
-		return wpos,cdnc_p,cdnc_wp,n
-	#
-	# Data
-	w=ncid.variables['w'][ind,]
-	l=ncid.variables['l'][ind,]
-	dims=l.shape # x, y, z
+	# Dimensions
+	dims=ncid.variables['l'][0,].shape #  x, y, z
 	#
 	# Optional: CDNC from UCLALES-SALSA simulations
-	if 'S_Nc' in ncid.variables: cdnc=ncid.variables['S_Nc'][ind,]
+	cdnc_calc='S_Nc' in ncid.variables
 	#
-	# Calculations
-	i=0; j=0
-	n=0; wpos=0.0
-	while i<dims[0] and j<dims[1]:
-		k=0
-		while k<dims[2]:
-			if l[i,j,k]>tol_clw:
-				# Found cloud base, but only the positive updraft velocities are counted
-				if w[i,j,k]>=0.:
-					n+=1
-					wpos+=w[i][j][k]
-					if 'S_Nc' in ncid.variables:
-						cdnc_p+=cdnc[i,j,k]
-						cdnc_wp+=w[i][j][k]*cdnc[i,j,k]
-				break
-			k+=1
-		if j+1<dims[1]:
-			j+=1
+	#
+	# Outputs
+	wpos=0.		# Mean positive updraft velocity at the cloud base (m/s)
+	w2pos=0.		# Velocity weighted mean positive updraft velocity at the cloud base (m/s)
+	cdnc_p=0.		# Mean cloud droplet number concentration at the cloud base with positive updraft velocity (1/kg)
+	cdnc_wp=0.	# Velocity weigted mean cloud droplet number concentration at the cloud base with positive updraft velocity (1/kg)
+	n=0				# Number of cloud bases with positive updraft (-)
+	#
+	ind=-1
+	for tt in times:
+		# Time range
+		ind+=1
+		if tt<tstart-ttol:
+			continue
+		elif tt>tend+ttol:
+			break # Assuming monotonic time
+		#
+		# Data
+		w=ncid.variables['w'][ind,]
+		l=ncid.variables['l'][ind,]
+		if cdnc_calc: cdnc=ncid.variables['S_Nc'][ind,]
+		#
+		# Calculations
+		if True:
+			# This is much faster
+			for i in range(0,dims[0]):
+				for j in range(0,dims[1]):
+					kk, = numpy.where(l[i,j,:]>tol_clw)
+					if len(kk)>0 and w[i,j,kk[0]]>0.:
+						k=kk[0]
+						n+=1
+						wpos+=w[i,j,k]
+						w2pos+=w[i,j,k]**2
+						if cdnc_calc:
+							cdnc_p+=cdnc[i,j,k]
+							cdnc_wp+=w[i,j,k]*cdnc[i,j,k]
 		else:
-			i+=1
-			j=0
+			# The old method
+			i=0; j=0
+			while i<dims[0] and j<dims[1]:
+				k=0
+				while k<dims[2]:
+					if l[i,j,k]>tol_clw:
+						# Found cloud base, but only the positive updraft velocities are counted
+						if w[i,j,k]>0.:
+							n+=1
+							wpos+=w[i,j,k]
+							w2pos+=w[i,j,k]**2
+							if cdnc_calc:
+								cdnc_p+=cdnc[i,j,k]
+								cdnc_wp+=w[i,j,k]*cdnc[i,j,k]
+						break
+					k+=1
+				if j+1<dims[1]:
+					j+=1
+				else:
+					i+=1
+					j=0
 	#
 	if n>0:
+		w2pos/=wpos
 		wpos/=n
-		if 'S_Nc' in ncid.variables:
+		if cdnc_calc:
 			cdnc_p/=n
 			cdnc_wp/=(wpos*n)
+		else:
+			cdnc_p=-999.
+			cdnc_wp=-999.
 	else:
 		wpos=-999.
+		w2pos=-999.
+		cdnc_p=-999.
+		cdnc_wp=-999.
 	#
 	# Close file
 	ncid.close()
 	#
 	# Outputs: mean positive updraft velocity and cloud droplet number concentrations (mean and weighted with velocity) at the cloud base
-	return wpos,cdnc_p,cdnc_wp,n
+	return wpos,w2pos,cdnc_p,cdnc_wp,n
 
 
 
@@ -388,8 +409,83 @@ def get_netcdf_variable(fname,var_name,start_time,end_time=-10000.,ttol=3600.,st
 	return out
 
 
+def GetEmu2Vars(path):
+	# Function calculates LES output variables for emulator v2.0 as defined in the ECLAIR proof-of-concept document
+	#	https://docs.google.com/document/d/1L-YyJLhtmLYg4rJYo5biOW96eeRC7z_trZsow_8TbeE/edit
+	#
+	# Inputs:
+	# 	path			Complete path the root data
+	# Outputs:
+	#	A 2D array of values as described below
+	#
+	# Example:
+	# path='/arch/eclair/UCLALES-SALSA_training_simulations/case_emulator_DESIGN_v3.0.0_LES_ECLAIR_branch_ECLAIRv2.0.cray.fast_LVL3/'
+	# data=GetEmu2Vars(path)
+	#
+	import os
+	#
+	# Time window
+	tstart=2.5*3600
+	tend=3.5*3600
+	#
+	if path.endswith('/'):
+		fmt='emul%03u/emul%03u'
+	else:
+		fmt='/emul%03u/emul%03u'
+	#
+	# Examine the data files
+	out=[]
+	i=1
+	while True:
+		# Data must exist
+		if not os.path.lexists( (path+fmt+'.nc')%(i,i) ) and not os.path.lexists( (path+fmt+'.ts.nc')%(i,i) ):
+			if i==1:
+				raise RuntimeError('Data not found from '+path+'!')
+			else:
+				break
+		#
+		# Emulator v2.0 variables
+		#	- Tolerance for the start and end times is +/- 10 s
+		#	- No need to ignore the first point when averaging instantaneous variables (rain processes and w calculated form 4D data,)
+		#
+		# Data file
+		file=(path+fmt+'.ts.nc')%(i,i)
+		# 1a) Rain water loss (evaporation + surface precipitation)
+		# Change in column rain water due to condensation (kg/m^2/s)
+		cond=get_netcdf_variable(file,'cond_rr',tstart,tend,ttol=10.)
+		# Change in column rain water due to sedimentation (kg/m^2/s)
+		sedi=get_netcdf_variable(file,'sedi_rr',tstart,tend,ttol=10.)
+		#
+		# 1b) Rain water production (not including divergence - with that the total production is the same as total loss)
+		# Change in column rain water due to coagulation (kg/m^2/s)
+		coag=get_netcdf_variable(file,'coag_rr',tstart,tend,ttol=10.)
+		# Change in column rain water due to autoconversion (kg/m^2/s)
+		auto=get_netcdf_variable(file,'auto_rr',tstart,tend,ttol=10.)
+		# Change in column rain water due to diagnostics (kg/m^2/s)
+		diag=get_netcdf_variable(file,'diag_rr',tstart,tend,ttol=10.)
+		#
+		# 2) Precipitation statistics (ignore the first point, which is an everage from the previous time period)
+		# Surface precipitation rate (W/m^2)
+		prcp=get_netcdf_variable(file,'prcp',tstart,tend,ttol=10.,start_offset=1)
+		# 1 W = J/s, which can be converted to mass flux by using latent heat of water (2.5e+6 J/kg)
+		prcp/=2.5e6 # kg/m^2/s
+		#
+		# 3) Cloud base positive updraft velocity (m/s)
+		file_4d=(path+fmt+'.nc') % (i,i)
+		wpos,w2pos,cdnc_p,cdnc_wp,n = get_netcdf_updraft(file_4d,tstart,tend,ttol=10.)
+		#
+		out.append([i,cond,sedi,coag,auto,diag,prcp,wpos,w2pos,cdnc_p,cdnc_wp,n])
+		#
+		if i==1: print 'id        cond        sedi       coag       auto       diag       prcp    wpos   w2pos      cdnc_p     cdnc_wp        n'
+		print ('%2g  %8.3e  %8.3e  %8.3e  %8.3e  %8.3e  %8.3e  %6.4f  %6.4f  %7.3e  %7.3e  %7g')%(i,cond,sedi,coag,auto,diag,prcp,wpos,w2pos,cdnc_p,cdnc_wp,n)
+		#
+		i+=1
+	#
+	# Output lines are: id, cond, sedi, coag, auto, diag, prcp, wpos, w2pos, cdnc_p, cdnc_wp, n
+	return out
 
-def extract_write_data(fname_template,specs,name_out='',nmax=200,skip_errs=False):
+
+def extract_write_data(fname_template,specs,name_out='',nmax=9999,skip_errs=False):
 	# Extract and process data from one or more NetCDF files, and write it to a text file (optional)
 	#
 	# Inputs:
@@ -423,7 +519,27 @@ def extract_write_data(fname_template,specs,name_out='',nmax=200,skip_errs=False
 	# Function for converting command line commands to NetCDF format
 	def interpret_fun(cmd):
 		# Interpret function call, e.g. 'numpy.amax(l[89,:])': just replace variable name x with "ncid.variables['x']",
-		# e.g. 'numpy.amax(l[2,100,100,:])
+		# e.g. 'numpy.amax(l[2,100,100,:])', numpy.amax(l[89,:])',numpy.amax(l)' or 'numpy.amax(P_Rwca,axis=0)'
+		# Now also function calls like "thl[numpy.abs(ncid.variables['time'][:]-10800.).argmin(),:]" are accepted!
+		frst=-1
+		lst=-1
+		i=0
+		for tt in cmd:
+			if (tt=='[' or tt==')' or tt==',') and lst==-1:
+				# e.g. 'numpy.amax(l[89,:])', 'numpy.amax(l)', 'numpy.amax(P_Rwca,axis=0)' or thl[numpy.abs(ncid.variables['time'][:]-10800.).argmin(),:]"
+				lst=i
+				if frst==0:
+					fun='ncid.variables[\''+cmd[frst:lst]+'\']'+cmd[lst:]
+				else:
+					fun=cmd[:frst+1]+'ncid.variables[\''+cmd[frst+1:lst]+'\']'+cmd[lst:]
+				return fun
+			elif tt=='(' or i==0:
+				frst=i
+			i+=1
+		# No solution
+		return cmd
+		#
+		# The old version
 		frst=-1
 		lst=-1
 		i=0
