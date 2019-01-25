@@ -933,7 +933,7 @@ def calc_lwp(p_surf,theta,pblh,rt):
 
 
 def solve_rw_lwp(p_surf,theta,lwp,pblh,debug=False):
-	# Solve boundary layer total water mixing ratio (kg/kg) from liquid water potentialtemperature (theta [K]), 
+	# Solve boundary layer total water mixing ratio (kg/kg) from liquid water potential temperature (theta [K]),
 	# liquid water path (lwp, kg/m^2) and boundary layer height (pblh, Pa or km) for an adiabatic cloud.
 	# For example, solve_rw_lwp(101780.,293.,100e-3,20000.) would return 0.00723684088331 [kg/kg].
 	#
@@ -981,6 +981,50 @@ def solve_rw_lwp(p_surf,theta,lwp,pblh,debug=False):
 	if debug: print ('Iteration failed: current LWP=%5.1f, target LWP=%5.1f')%(lwp_new*1e3,lwp*1e3)
 	return -999.
 
+
+def solve_q_inv_RH(press,tpot,q,max_RH):
+	# Function for adjusting total water mixing ratio so that the calculated RH will be no more
+	# than the given RH limit. This function can be used to increase humidity inversion so that RH
+	# above cloud is less than 100%. For this purpose the typical inputs are:
+	#	press [Pa] = p_surf - pblh
+	#	tpot [K] = tpot_pbl + tpot_inv
+	#	q [kg/kg] = q_pbl - q_inv
+	#	RH [%] = 98.
+	#
+	# Constants
+	R=287.04	# Specific gas constant for dry air (R_specific=R/M), J/kg/K
+	cp=1005.0	# Specific heat for a constant pressure
+	rcp=R/cp
+	p00=1.0e+05
+	#
+	# Temperature (K)
+	temp=tpot*(press/p00)**rcp
+	#
+	# RH (%)
+	rh=calc_rh(q,temp,press)
+	#
+	# All done if RH is not exceeding the RH limit
+	if rh<=max_RH: return q, rh, rh
+	#
+	# Solve q so that RH=max_RH
+	q_min=0.
+	q_max=q
+	k=0
+	while k<200:
+		q_new=0.5*(q_min+q_max)
+		rh_new=calc_rh(q_new,temp,press)
+		#
+		if abs(rh_new-max_RH)<0.001:
+			return q_new, rh_new, rh
+		elif rh_new>max_RH:
+			q_max=q_new
+		else:
+			q_min=q_new
+		k+=1
+	#
+	# Failed
+	print 'Failed to solve water vapor mixing ratio from given RH!'
+	return -999.,-999., rh
 
 
 #
